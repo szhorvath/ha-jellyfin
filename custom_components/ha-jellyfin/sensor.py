@@ -1,5 +1,6 @@
 """Sensors for the Media Browser (Emby/Jellyfin) integration."""
 
+import asyncio
 import logging
 from datetime import date
 from typing import Any, Callable
@@ -12,6 +13,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .hub import MediaBrowserHub
 
 from .const import (
+    CONF_SENSOR_CONTINUE_WATCHING,
     CONF_SENSOR_ITEM_TYPE,
     CONF_SENSOR_LIBRARY,
     CONF_SENSOR_USER,
@@ -21,6 +23,9 @@ from .const import (
     DEFAULT_UPCOMING_MEDIA,
     DOMAIN,
     ENTITY_TITLE_MAP,
+    KEY_ALL,
+    LATEST_QUERY_FIELDS,
+    Query,
     SENSOR_ITEM_TYPES,
     TICKS_PER_MINUTE,
     TICKS_PER_SECOND,
@@ -44,6 +49,7 @@ from .helpers import (
 
 ICON_SENSOR_LIBRARY = "mdi:multimedia"
 ICON_SENSOR_SESSIONS = "mdi:play-box-multiple"
+ICON_SENSOR_CONTINUE_WATCHING = "mdi:play-circle"
 
 
 _LOGGER = logging.getLogger(__package__)
@@ -67,6 +73,15 @@ async def async_setup_entry(
                 entry.options.get(CONF_UPCOMING_MEDIA, DEFAULT_UPCOMING_MEDIA),
             )
             for sensor in entry.options.get(CONF_SENSORS, [])
+            if not sensor.get(CONF_SENSOR_CONTINUE_WATCHING, False)
+        ]
+        + [
+            ContinueWatchingSensor(
+                hub,
+                sensor[CONF_SENSOR_USER],
+            )
+            for sensor in entry.options.get(CONF_SENSORS, [])
+            if sensor.get(CONF_SENSOR_CONTINUE_WATCHING, False)
         ]
     )
 
@@ -209,6 +224,117 @@ class LibrarySensor(MediaBrowserEntity, SensorEntity):
                 for item in self._latest_info[Response.ITEMS]:
                     upcoming_data.append(_get_upcoming_attr(item, self.hub.server_url))
                 self._attr_extra_state_attributes["data"] = upcoming_data
+
+
+class ContinueWatchingSensor(MediaBrowserEntity, SensorEntity):
+    """Sensor for displaying continue watching items for a specific user."""
+
+    def __init__(
+        self,
+        hub: MediaBrowserHub,
+        user_id: str,
+    ) -> None:
+        super().__init__(hub)
+        self._user_id: str = user_id
+        self._user_name: str | None = None
+        self._attr_name = f"{self.hub.name} Continue Watching"
+        self._attr_unique_id = "-".join(
+            [
+                self.hub.server_id or "",
+                user_id,
+                EntityType.CONTINUE_WATCHING,
+            ]
+        )
+        self._attr_icon = ICON_SENSOR_CONTINUE_WATCHING
+        self._resume_info: dict[str, Any] | None = None
+        self._availability_unlistener: Callable[[], None] | None = None
+        self._update_task: asyncio.Task[None] | None = None
+
+    async def async_added_to_hass(self):
+        self._availability_unlistener = self.hub.on_availability_changed(
+            self._async_availability_updated
+        )
+
+        if self._user_id != KEY_ALL:
+            try:
+                users = await self.hub.async_get_users()
+                user = next((u for u in users if u["Id"] == self._user_id), None)
+                if user:
+                    self._user_name = user.get("Name")
+                    self._attr_name = f"{self.hub.name} Continue Watching ({self._user_name})"
+            except Exception:  # pylint: disable=broad-except
+                pass
+
+        await self._async_update_resume_items()
+
+    async def async_will_remove_from_hass(self):
+        if self._availability_unlistener is not None:
+            self._availability_unlistener()
+        if self._update_task is not None and not self._update_task.done:
+            self._update_task.cancel()
+
+    async def _async_availability_updated(self, availability: bool) -> None:
+        self._attr_available = availability
+        if availability:
+            await self._async_update_resume_items()
+
+    async def _async_update_resume_items(self) -> None:
+        """Update resume items from the server."""
+        try:
+            if self._user_id == KEY_ALL:
+                self._attr_native_value = None
+                self._attr_extra_state_attributes = {}
+                self.async_write_ha_state()
+                return
+
+            params = {
+                Query.LIMIT: 20,
+                Query.FIELDS: ",".join(LATEST_QUERY_FIELDS),
+            }
+            self._resume_info = await self.hub.async_get_resume_items(
+                self._user_id, params
+            )
+            self._update_from_data()
+            self.async_write_ha_state()
+        except Exception as err:  # pylint: disable=broad-except
+            _LOGGER.error("Error updating continue watching sensor: %s", err)
+            self._attr_available = False
+
+    def _update_from_data(self) -> None:
+        """Update sensor state from resume data."""
+        self._attr_native_value = None
+        self._attr_extra_state_attributes = {}
+
+        if self._resume_info is not None:
+            items = self._resume_info.get(Response.ITEMS, [])
+            self._attr_native_value = len(items)
+
+            continue_watching_items = []
+            for item in items:
+                item_attr = _get_sensor_attr(item, self.hub.server_url or "")
+
+                if Item.USER_DATA in item:
+                    user_data = item[Item.USER_DATA]
+                    if "PlayedPercentage" in user_data:
+                        item_attr["played_percentage"] = user_data["PlayedPercentage"]
+                    if "PlaybackPositionTicks" in user_data:
+                        position_ticks = as_int({"value": user_data["PlaybackPositionTicks"]}, "value") or 0
+                        item_attr["playback_position_seconds"] = position_ticks // TICKS_PER_SECOND
+                        if Item.RUNTIME_TICKS in item:
+                            runtime_ticks = as_int(item, Item.RUNTIME_TICKS) or 0
+                            if runtime_ticks > 0:
+                                item_attr["progress_percentage"] = int(
+                                    (position_ticks / runtime_ticks) * 100
+                                )
+
+                continue_watching_items.append(item_attr)
+
+            self._attr_extra_state_attributes = {
+                "server_name": self.hub.server_name,
+                "server_id": self.hub.server_id,
+                "user_id": self._user_id,
+                "items": continue_watching_items,
+            }
 
 
 def _get_session_attr(data: dict[str, Any]) -> dict[str, Any]:

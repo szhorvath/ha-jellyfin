@@ -375,6 +375,15 @@ class MediaBrowserHub:
             f"{ApiUrl.USERS}/{user_id}{ApiUrl.ITEMS}", params
         )
 
+    async def async_get_resume_items(
+        self, user_id: str, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Gets resume items (continue watching) for a user."""
+        await self._async_needs_authentication()
+        return await self._async_rest_get_json(
+            f"{ApiUrl.USERS}/{user_id}{ApiUrl.RESUME_ITEMS}", params or {}
+        )
+
     async def async_get_users(self) -> list[dict[str, Any]]:
         """Gets a list of users"""
         await self._async_needs_authentication()

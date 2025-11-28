@@ -33,6 +33,7 @@ CONF_SENSOR_ITEM_TYPE = "sensor_type"
 CONF_SENSOR_USER = "sensor_user"
 CONF_SENSOR_LIBRARY = "sensor_library"
 CONF_SENSOR_REMOVE = "sensor_remove"
+CONF_SENSOR_CONTINUE_WATCHING = "sensor_continue_watching"
 
 CONF_CACHE_SERVER_NAME = "cache_server_name"
 CONF_CACHE_SERVER_ID = "cache_server_id"
@@ -133,6 +134,7 @@ class ApiUrl(StrEnum):
     PLAYING = "/Playing"
     PREFIXES = "/Items/Prefixes"
     RESTART = "/System/Restart"
+    RESUME_ITEMS = "/Items/Resume"
     SEASONS = "/Seasons"
     SESSIONS = "/Sessions"
     SHOWS = "/Shows"
@@ -239,6 +241,7 @@ class Item(StrEnum):
     PRIMARY = "Primary"
     REMOTE_END_POINT = "RemoteEndPoint"
     SERIES_ID = "SeriesId"
+    USER_DATA = "UserData"
     SERIES_THUMB_IMAGE_TAG = "SeriesThumbImageTag"
     REPEAT_MODE = "RepeatMode"
     RUNTIME_TICKS = "RunTimeTicks"
@@ -425,6 +428,7 @@ class ImageCategory(StrEnum):
 class EntityType(StrEnum):
     """Suffixes for unique ids."""
 
+    CONTINUE_WATCHING = "continue_watching"
     LIBRARY = "library"
     PLAYER = "player"
     RESCAN = "rescan"

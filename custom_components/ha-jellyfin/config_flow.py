@@ -38,6 +38,7 @@ from .const import (
     CONF_IGNORE_MOBILE_PLAYERS,
     CONF_IGNORE_WEB_PLAYERS,
     CONF_PURGE_PLAYERS,
+    CONF_SENSOR_CONTINUE_WATCHING,
     CONF_SENSOR_ITEM_TYPE,
     CONF_SENSOR_LIBRARY,
     CONF_SENSOR_REMOVE,
@@ -56,10 +57,10 @@ from .const import (
     DEFAULT_SERVER_NAME,
     DEFAULT_UPCOMING_MEDIA,
     DOMAIN,
-    SENSOR_ITEM_TYPES,
-    KEY_ALL,
-    Discovery,
     EntityType,
+    KEY_ALL,
+    SENSOR_ITEM_TYPES,
+    Discovery,
     Item,
     Server,
 )
@@ -401,13 +402,16 @@ class MediaBrowserOptionsFlow(OptionsFlow):
         sensors = self.options.get(CONF_SENSORS, [])
 
         entity_registry = async_get(self.hass)
-        entries = {
-            extract_sensor_key(entry.unique_id): entry
-            for entry in async_entries_for_config_entry(
-                entity_registry, self.config_entry.entry_id
-            )
-            if entry.unique_id.endswith(f"-{EntityType.LIBRARY}")
-        }
+        entries = {}
+        for entry in async_entries_for_config_entry(
+            entity_registry, self.config_entry.entry_id
+        ):
+            if entry.unique_id.endswith(f"-{EntityType.LIBRARY}"):
+                entries[extract_sensor_key(entry.unique_id)] = entry
+            elif entry.unique_id.endswith(f"-{EntityType.CONTINUE_WATCHING}"):
+                parts = entry.unique_id.split("-")
+                user_id = "-".join(parts[1:-1]) if len(parts) > 2 else ""
+                entries[f"{user_id}-{EntityType.CONTINUE_WATCHING}"] = entry
 
         if len(sensors) == 0 and len(entries) == 0:
             return self.async_abort(reason="no_sensors")
@@ -419,7 +423,13 @@ class MediaBrowserOptionsFlow(OptionsFlow):
                 entity_registry.async_remove(entry.entity_id)
 
             for sensor in sensors:
-                if build_sensor_key_from_config(sensor) == target:
+                is_continue_watching = sensor.get(CONF_SENSOR_CONTINUE_WATCHING, False)
+                if is_continue_watching:
+                    sensor_key = f"{sensor[CONF_SENSOR_USER]}-{EntityType.CONTINUE_WATCHING}"
+                else:
+                    sensor_key = build_sensor_key_from_config(sensor)
+
+                if sensor_key == target:
                     sensors.remove(sensor)
                     break
 
@@ -456,27 +466,97 @@ class MediaBrowserOptionsFlow(OptionsFlow):
     ) -> FlowResult:
         """Handle a step to add a new latest sensor."""
         if user_input:
-            sensor_key = build_sensor_key_from_config(user_input)
+            is_continue_watching = user_input.get(CONF_SENSOR_CONTINUE_WATCHING, False)
+
+            if is_continue_watching:
+                sensor_key = f"{user_input[CONF_SENSOR_USER]}-{EntityType.CONTINUE_WATCHING}"
+                sensor_config = {
+                    CONF_SENSOR_CONTINUE_WATCHING: True,
+                    CONF_SENSOR_USER: user_input[CONF_SENSOR_USER],
+                }
+            else:
+                item_type = user_input.get(CONF_SENSOR_ITEM_TYPE)
+                library = user_input.get(CONF_SENSOR_LIBRARY)
+                if not item_type or not library:
+                    hub: MediaBrowserHub = self.hass.data[DOMAIN][self.config_entry.entry_id][
+                        DATA_HUB
+                    ]
+                    user_list = {
+                        user["Id"]: user["Name"]
+                        for user in sorted(await hub.async_get_users(), key=lambda x: x["Name"])
+                    }
+                    library_list = {KEY_ALL: "(All libraries)"} | {
+                        library[Item.ID]: library[Item.NAME]
+                        for library in sorted(
+                            await hub.async_get_libraries(), key=lambda x: x[Item.NAME]
+                        )
+                    }
+                    type_list = {
+                        key: value["title"]
+                        for key, value in sorted(
+                            SENSOR_ITEM_TYPES.items(), key=lambda x: x[1]["title"]
+                        )
+                    }
+                    return self.async_show_form(
+                        step_id="add_sensor",
+                        data_schema=vol.Schema(
+                            {
+                                vol.Required(
+                                    CONF_SENSOR_CONTINUE_WATCHING,
+                                    default=False,  # type: ignore
+                                ): bool,
+                                vol.Optional(
+                                    CONF_SENSOR_ITEM_TYPE,
+                                    default=item_type or "Movie",  # type: ignore
+                                ): vol.In(type_list),
+                                vol.Optional(
+                                    CONF_SENSOR_LIBRARY,
+                                    default=library or KEY_ALL,  # type: ignore
+                                ): vol.In(library_list),
+                                vol.Required(
+                                    CONF_SENSOR_USER,
+                                    default=user_input.get(CONF_SENSOR_USER),  # type: ignore
+                                ): vol.In(user_list),
+                            }
+                        ),
+                        errors={"base": "item_type_and_library_required"},
+                    )
+                sensor_key = build_sensor_key_from_config(user_input)
+                sensor_config = {
+                    CONF_SENSOR_CONTINUE_WATCHING: False,
+                    CONF_SENSOR_USER: user_input[CONF_SENSOR_USER],
+                    CONF_SENSOR_ITEM_TYPE: item_type,
+                    CONF_SENSOR_LIBRARY: library,
+                }
 
             sensors = self.options.get(CONF_SENSORS, [])
 
             configs = {
                 build_sensor_key_from_config(config): config for config in sensors
+                if not config.get(CONF_SENSOR_CONTINUE_WATCHING, False)
             }
+            configs.update({
+                f"{config[CONF_SENSOR_USER]}-{EntityType.CONTINUE_WATCHING}": config
+                for config in sensors
+                if config.get(CONF_SENSOR_CONTINUE_WATCHING, False)
+            })
 
             entity_registry = async_get(self.hass)
-            entries = {
-                extract_sensor_key(entry.unique_id): entry
-                for entry in async_entries_for_config_entry(
-                    entity_registry, self.config_entry.entry_id
-                )
-                if entry.unique_id.endswith(f"-{EntityType.LIBRARY}")
-            }
+            entries = {}
+            for entry in async_entries_for_config_entry(
+                entity_registry, self.config_entry.entry_id
+            ):
+                if entry.unique_id.endswith(f"-{EntityType.LIBRARY}"):
+                    entries[extract_sensor_key(entry.unique_id)] = entry
+                elif entry.unique_id.endswith(f"-{EntityType.CONTINUE_WATCHING}"):
+                    parts = entry.unique_id.split("-")
+                    user_id = "-".join(parts[1:-1]) if len(parts) > 2 else ""
+                    entries[f"{user_id}-{EntityType.CONTINUE_WATCHING}"] = entry
 
             if sensor_key in configs or sensor_key in entries:
                 return self.async_abort(reason="sensor_already_configured")
 
-            sensors.append(user_input)
+            sensors.append(sensor_config)
 
             self.options |= {CONF_SENSORS: sensors}
 
@@ -486,7 +566,7 @@ class MediaBrowserOptionsFlow(OptionsFlow):
             DATA_HUB
         ]
 
-        user_list = {KEY_ALL: "(All users)"} | {
+        user_list = {
             user["Id"]: user["Name"]
             for user in sorted(await hub.async_get_users(), key=lambda x: x["Name"])
         }
@@ -510,16 +590,20 @@ class MediaBrowserOptionsFlow(OptionsFlow):
             data_schema=vol.Schema(
                 {
                     vol.Required(
+                        CONF_SENSOR_CONTINUE_WATCHING,
+                        default=False,  # type: ignore
+                    ): bool,
+                    vol.Optional(
                         CONF_SENSOR_ITEM_TYPE,
                         default="Movie",  # type: ignore
                     ): vol.In(type_list),
-                    vol.Required(
+                    vol.Optional(
                         CONF_SENSOR_LIBRARY,
                         default=KEY_ALL,  # type: ignore
                     ): vol.In(library_list),
                     vol.Required(
                         CONF_SENSOR_USER,
-                        default=KEY_ALL,  # type: ignore
+                        default=next(iter(user_list.keys()), None) if user_list else None,  # type: ignore
                     ): vol.In(user_list),
                 }
             ),
