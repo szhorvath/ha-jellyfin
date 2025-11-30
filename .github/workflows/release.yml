@@ -1,35 +1,22 @@
-name: "Release"
+name: Create Release Zip
 
 on:
   release:
-    types:
-      - "published"
-
-permissions: {}
+    types: [published]
 
 jobs:
-  release:
-    name: "Release"
-    runs-on: "ubuntu-latest"
-    permissions:
-      contents: write
+  build:
+    runs-on: ubuntu-latest
     steps:
-      - name: "Checkout the repository"
-        uses: "actions/checkout@v4.2.2"
-
-      - name: "Adjust version number"
-        shell: "bash"
+      - uses: actions/checkout@v4
+      
+      - name: Create zip file
         run: |
-          yq -i -o json '.version="${{ github.event.release.tag_name }}"' \
-            "${{ github.workspace }}/custom_components/ha-jellyfin/manifest.json"
-
-      - name: "ZIP the integration directory"
-        shell: "bash"
-        run: |
-          cd "${{ github.workspace }}/custom_components/ha-jellyfin"
-          zip ha-jellyfin.zip -r ./
-
-      - name: "Upload the ZIP file to the release"
-        uses: softprops/action-gh-release@v2.3.2
+          zip -r ha-jellyfin.zip custom_components/ha-jellyfin/ -x "*.pyc" -x "__pycache__/*" -x "*.pyc"
+      
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
         with:
-          files: ${{ github.workspace }}/custom_components/ha-jellyfin/ha-jellyfin.zip
+          files: ha-jellyfin.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
